@@ -1,0 +1,176 @@
+name: Build linux-arm64 (Frame)
+
+# Native ARM64 build of the MagicPods app for ARM64 SteamOS devices (Steam Frame).
+# It links against Qt 6.10.2 from the Qt Company's prebuilt arm64 packages (via
+# aqtinstall) and ships WITHOUT Qt: at runtime it uses the device's system Qt,
+# which must be 6.10.2 or newer (Qt 6 is forward compatible). It does not build
+# or bundle MagicPodsCore; the device runs that separately.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - '**'
+    paths:
+      - 'src/**'
+      - 'frame/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/build-arm64.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  QT_VERSION: '6.10.2'      # the device's system Qt; the build must not be newer
+  MAX_GLIBC: '2.43'         # device glibc
+  MAX_GLIBCXX: '3.4.34'     # device libstdc++
+  AQT_VERSION: '3.3.0'
+  DIST_NAME: magicpods-linux-arm64
+
+jobs:
+  build:
+    name: magicpods (linux-arm64, Qt 6.10.2)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build g++ patchelf file python3-venv \
+            libgl1-mesa-dev libegl1-mesa-dev libvulkan-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libfreetype-dev \
+            libdbus-1-dev libxcb1-dev libx11-xcb-dev
+          uname -m; gcc --version | head -n1; cmake --version | head -n1
+
+      - name: Restore Qt cache
+        id: qtcache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/Qt
+          key: qt-${{ env.QT_VERSION }}-linux_gcc_arm64-websockets-shadertools-aqt${{ env.AQT_VERSION }}-v1
+
+      - name: Install Qt ${{ env.QT_VERSION }} (aqtinstall)
+        if: steps.qtcache.outputs.cache-hit != 'true'
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/aqt"
+          "${RUNNER_TEMP}/aqt/bin/pip" install --quiet "aqtinstall==${AQT_VERSION}"
+          "${RUNNER_TEMP}/aqt/bin/aqt" install-qt linux_arm64 desktop "${QT_VERSION}" linux_gcc_arm64 \
+            -m qtwebsockets qtshadertools -O "${RUNNER_TEMP}/Qt"
+
+      - name: Save Qt cache
+        if: steps.qtcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/Qt
+          key: qt-${{ env.QT_VERSION }}-linux_gcc_arm64-websockets-shadertools-aqt${{ env.AQT_VERSION }}-v1
+
+      - name: Configure
+        run: |
+          QT_DIR="${RUNNER_TEMP}/Qt/${QT_VERSION}/gcc_arm64"
+          echo "QT_DIR=${QT_DIR}" >> "${GITHUB_ENV}"
+          test "$("${QT_DIR}/bin/qmake" -query QT_VERSION)" = "${QT_VERSION}"
+          # QT_QML_NO_CACHEGEN: ship plain QML instead of compiled units and AOT C++,
+          # which are tied to the exact Qt version that built them.
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="${QT_DIR}" -DQT_QML_NO_CACHEGEN=ON
+
+      - name: Build
+        run: cmake --build build --parallel "$(nproc)"
+
+      - name: Assemble dist/
+        env:
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          rm -rf dist && mkdir -p dist
+          cp build/magicpods dist/magicpods
+          strip --strip-unneeded dist/magicpods
+          # Use the device's system Qt, never the CI install path.
+          patchelf --remove-rpath dist/magicpods
+          cp LICENSE dist/LICENSE
+          if [ -d frame ]; then cp -r frame dist/frame; fi
+          version="$(sed -n 's/^project(magicpods VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+          {
+            echo "MagicPods for Linux ${version} (linux-arm64 build for ARM64 SteamOS devices)"
+            echo
+            echo "This program is licensed under the GNU GPL v3 (see LICENSE)."
+            echo "Corresponding source code for this exact build:"
+            echo "  repository: ${SERVER_URL}/${REPOSITORY}"
+            echo "  commit:     ${COMMIT_SHA}"
+            echo "  tree:       ${SERVER_URL}/${REPOSITORY}/tree/${COMMIT_SHA}"
+            echo "  built by:   ${SERVER_URL}/${REPOSITORY}/actions/runs/${RUN_ID} (ref ${REF_NAME})"
+            echo "Upstream project: https://github.com/steam3d/MagicPodsLinux"
+            echo
+            echo "Built against Qt ${QT_VERSION} (LGPL-3.0, not bundled: the device's system Qt is used)."
+            echo "Needs MagicPodsCore running separately on ws://localhost:2020."
+          } > dist/SOURCE.txt
+          cat dist/SOURCE.txt
+          ls -lR dist
+
+      - name: Verify dist/
+        run: |
+          set -u
+          fail() { echo "::error::verify failed: $*"; exit 1; }
+          bin=dist/magicpods
+          file "${bin}" | tee /dev/stderr | grep -q 'ARM aarch64' || fail "not an aarch64 ELF"
+          dyn="$(readelf -d "${bin}")"
+          grep -qE '\((RPATH|RUNPATH)\)' <<<"${dyn}" && fail "binary still has an RPATH/RUNPATH"
+          echo "--- NEEDED"; grep -E '\(NEEDED\)' <<<"${dyn}"
+          syms="$(readelf --dyn-syms -W "${bin}")"
+          if grep -qE 'Qt_6[A-Za-z0-9._]*_PRIVATE_API' <<<"${syms}"; then fail "uses Qt private API (ties it to one Qt patch release)"; fi
+          echo "Qt symbol versions: $(grep -oE 'Qt_6[A-Za-z0-9._]*' <<<"${syms}" | sort -u | tr '\n' ' ')"
+          le() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$2" ]; }
+          g="$(grep -oE 'GLIBC_[0-9.]+' <<<"${syms}" | sed 's/GLIBC_//' | sort -uV | tail -n1)"
+          x="$(grep -oE 'GLIBCXX_[0-9.]+' <<<"${syms}" | sed 's/GLIBCXX_//' | sort -uV | tail -n1)"
+          echo "max GLIBC_${g}, max GLIBCXX_${x}"
+          le "${g}" "${MAX_GLIBC}" || fail "needs GLIBC_${g} > ${MAX_GLIBC}"
+          le "${x}" "${MAX_GLIBCXX}" || fail "needs GLIBCXX_${x} > ${MAX_GLIBCXX}"
+          echo "--- ldd -r against the build Qt"
+          LD_LIBRARY_PATH="${QT_DIR}/lib" ldd -r "${bin}" > ldd.txt 2>&1 || true
+          cat ldd.txt
+          grep -qE 'undefined symbol|not found' ldd.txt && fail "unresolved symbols or libraries"
+          {
+            echo "### ${DIST_NAME}"
+            echo "- Qt ${QT_VERSION}, max GLIBC_${g}, max GLIBCXX_${x}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Package
+        run: |
+          mkdir -p out
+          tar --sort=name --owner=0 --group=0 --numeric-owner \
+              --transform "s,^dist,${DIST_NAME}," \
+              -czf "out/${DIST_NAME}.tar.gz" dist
+          (cd out && sha256sum "${DIST_NAME}.tar.gz" > "${DIST_NAME}.tar.gz.sha256")
+          cat "out/${DIST_NAME}.tar.gz.sha256"
+          tar -tzvf "out/${DIST_NAME}.tar.gz"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: magicpods-linux-arm64
+          path: |
+            out/magicpods-linux-arm64.tar.gz
+            out/magicpods-linux-arm64.tar.gz.sha256
+          retention-days: 30
+          if-no-files-found: error
