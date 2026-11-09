@@ -134,6 +134,13 @@ int main(int argc, char *argv[]) {
     app.setQuitOnLastWindowClosed(false);
 
     const bool startInBackground = app.arguments().contains(QStringLiteral("--background"));
+    // Command for an already running instance: --toggle shows or hides it, --hide hides it,
+    // anything else raises it.
+    const QByteArray instanceCommand = app.arguments().contains(QStringLiteral("--toggle"))
+                                           ? QByteArrayLiteral("toggle")
+                                           : app.arguments().contains(QStringLiteral("--hide"))
+                                                 ? QByteArrayLiteral("hide")
+                                                 : QByteArrayLiteral("raise");
 
     const QString serverName = QString("magicpods_%1_%2")
                                    .arg(app.organizationDomain(), app.applicationName());
@@ -141,7 +148,7 @@ int main(int argc, char *argv[]) {
     socket.connectToServer(serverName);
     if (socket.waitForConnected(150)) {
         if (!startInBackground) {
-            socket.write("raise");
+            socket.write(instanceCommand);
             socket.flush();
             socket.waitForBytesWritten(150);
         }
@@ -178,14 +185,26 @@ int main(int argc, char *argv[]) {
         else
             raiseWindow();
     };
+    auto hideMainWindow = [&]() {
+        if (root)
+            root->setProperty("visible", false);
+    };
     auto handleRaiseRequest = [&]() {
+        QByteArray command;
         auto client = server.nextPendingConnection();
         if (client) {
-            client->readAll();
+            if (!client->bytesAvailable())
+                client->waitForReadyRead(150);
+            command = client->readAll().trimmed();
             client->disconnectFromServer();
             client->deleteLater();
         }
-        raiseWindow();
+        if (command == "toggle")
+            toggleMainWindow();
+        else if (command == "hide")
+            hideMainWindow();
+        else
+            raiseWindow();
     };
 
     QObject::connect(&server, &QLocalServer::newConnection, handleRaiseRequest);
@@ -271,6 +290,9 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
+    // MAGICPODS_NO_POPUP=1: no case-open animation window (e.g. when the app is shown as a
+    // single VR panel, where a second top-level window would take its place).
+    const bool popupDisabled = qEnvironmentVariableIntValue("MAGICPODS_NO_POPUP") != 0;
     QQmlComponent popupAnimationComponent(
         &engine,
         QUrl(QStringLiteral("qrc:/qt/qml/magicpods/src/app/qml/PopupAnimation.qml"))
@@ -278,8 +300,9 @@ int main(int argc, char *argv[]) {
     if (popupAnimationComponent.isError()) {
         qWarning() << popupAnimationComponent.errors();
     }
-    QScopedPointer<QObject> popupAnimation(popupAnimationComponent.create(engine.rootContext()));
-    if (!popupAnimation) {
+    QScopedPointer<QObject> popupAnimation(
+        popupDisabled ? nullptr : popupAnimationComponent.create(engine.rootContext()));
+    if (!popupAnimation && !popupDisabled) {
         qWarning() << "Failed to create PopupAnimation.qml";
         qWarning() << popupAnimationComponent.errors();
     }

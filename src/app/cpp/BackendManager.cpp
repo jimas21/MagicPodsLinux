@@ -13,6 +13,7 @@
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QThread>
+#include <QtGlobal>
 #include <QTimer>
 
 #include <csignal>
@@ -160,8 +161,20 @@ void BackendManager::beginShutdown()
     recovering.store(false);
 }
 
+// MAGICPODS_ATTACH_ONLY=1: the backend is run by someone else (e.g. a systemd --user
+// unit). Never look for, start, restart or stop a backend; only connect to it.
+static bool attachOnly()
+{
+    return qEnvironmentVariableIntValue("MAGICPODS_ATTACH_ONLY") != 0;
+}
+
 void BackendManager::recover()
 {
+    if (attachOnly()) {
+        qDebug() << "[BackendManager] Attach-only: recovery left to the backend's own supervisor";
+        return;
+    }
+
     if (shuttingDown.load()) {
         qDebug() << "[BackendManager] Recovery skipped during shutdown";
         return;
@@ -197,6 +210,12 @@ void BackendManager::recover()
 
 bool BackendManager::start()
 {
+    if (attachOnly()) {
+        qDebug() << "[BackendManager] Attach-only: not starting a backend";
+        ownsBackend = false;
+        return true;
+    }
+
     if (isRunning()) {
         qDebug() << "[BackendManager] Backend already running, attach only";
         ownsBackend = false;
