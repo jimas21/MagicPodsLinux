@@ -4,7 +4,8 @@ This is a fork of [MagicPods for Linux](https://github.com/steam3d/MagicPodsLinu
 Aleksandr Maslov and Andrei Litvintsev, adapted for the **Steam Frame**. It brings the
 menus of the [MagicPods Decky plugin](https://github.com/steam3d/MagicPodsDecky) into the
 Frame's own VR interface. All credit for MagicPods goes to the original project; this
-fork only adds what the Frame needs. Licence: GPL-3.0, the same as the original.
+fork only adds what the Frame needs. Unofficial: not made by or affiliated with Valve or the MagicPods authors.
+Licence: GPL-3.0, the same as the original.
 
 ## What you get on the Frame
 
@@ -30,33 +31,25 @@ service that talks to the headphones.
 
 ## Install
 
-### With frameplex
-
-In frameplex, open **Settings › Earbuds** and choose **Install earbud support**. It
-installs MagicPodsCore and this menu and keeps them up to date. (Coming in the next
-frameplex beta.)
-
-### Manually
+On the Steam Frame:
 
 1. Pair your headphones in the Frame's Bluetooth settings.
-2. Install MagicPodsCore: see its
-   [instructions](https://github.com/jimas21/MagicPodsCore#install).
-3. In a terminal on the Frame (Konsole, in Desktop Mode), download
-   `magicpods-frame-menu.tar.gz` from the
-   [latest release](https://github.com/jimas21/MagicPodsLinux/releases/latest), then:
+2. Switch to **Desktop Mode**, open this page in the headset's browser and press the
+   button to download the installer:
 
-   ```sh
-   tar -xzf magicpods-frame-menu.tar.gz
-   ./magicpods-frame-menu/install.sh
-   ```
+   <a href="https://github.com/jimas21/MagicPodsCore/releases/latest/download/Install-MagicPods.desktop"><img src="docs/images/install-button.svg" alt="Install MagicPods" width="240" /></a>
 
-4. Restart the headset once.
+3. Open `Install-MagicPods.desktop` from your Downloads folder and confirm when Desktop
+   Mode asks whether to trust it. A terminal window opens, downloads the latest
+   MagicPodsCore and MagicPods menu releases, checks their signatures and installs both.
+4. Restart the headset once. The earbuds battery then shows in the top bar.
 
-To update, repeat step 3 with the new release. To remove:
-`~/.local/share/magicpods-app/frame/uninstall.sh` (MagicPodsCore and your headphone
-settings stay).
+**Update:** run the installer again; your settings are kept. **Remove:** open
+[`Uninstall-MagicPods.desktop`](https://github.com/jimas21/MagicPodsCore/releases/latest/download/Uninstall-MagicPods.desktop)
+the same way.
 
-Everything runs as your normal user; nothing needs root.
+Everything runs as your normal user; nothing needs root. Every release is signed, and the
+installer refuses a download whose signature does not match.
 
 ## How it works
 
@@ -87,4 +80,8 @@ Details: [frame/README.md](frame/README.md).
   [MagicPodsCore](https://github.com/steam3d/MagicPodsCore) by Aleksandr Maslov
   (<https://magicpods.app>) and Andrei Litvintsev. The menu's noise-mode icons and its
   behaviour follow MagicPods for Decky.
-- This fork and its changes: GPL-3.0, like the original.
+- This fork and its changes: GPL-3.0, like the original (see [LICENSE](LICENSE)).
+- If MagicPods is useful to you, consider
+  [supporting the original project](https://magicpods.app/donate/).
+- AirPods is a trademark of Apple Inc.; Beats, Galaxy Buds, Pixel Buds and Steam Frame
+  belong to their owners. They are named only to say what this works with.
