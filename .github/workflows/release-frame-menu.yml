@@ -124,7 +124,7 @@ jobs:
             echo "MagicPods menu for Steam's VR UI on ARM64 SteamOS (Steam Frame), from commit ${SHA}."
             echo
             echo "Adds an earbuds battery indicator to the VR top bar and a MagicPods tab to the"
-            echo "quick-access popup. Needs MagicPodsCore (jimas21/MagicPodsCore) and Steam developer mode."
+            echo "quick-access popup. Needs MagicPodsCore (jimas21/MagicPodsCore)."
             echo
             echo "- \`${DIST_NAME}.tar.gz\` sha256 \`${sha}\`; ed25519 signature in \`${DIST_NAME}.tar.gz.sig\`"
             echo "- Install: unpack, run \`./${DIST_NAME}/install.sh\`. See README.md inside."

@@ -1,96 +1,90 @@
-# MagicPods✨ for Linux
+# MagicPods for Steam Frame
 
-Control your AirPods, Beats, and compatible Galaxy Buds on Linux and SteamOS. MagicPods brings battery monitoring, noise control, and advanced headphone settings to Steam Deck, Steam Machine, and Linux desktops.
+This is a fork of [MagicPods for Linux](https://github.com/steam3d/MagicPodsLinux) by
+Aleksandr Maslov and Andrei Litvintsev, adapted for the **Steam Frame**. It brings the
+menus of the [MagicPods Decky plugin](https://github.com/steam3d/MagicPodsDecky) into the
+Frame's own VR interface. All credit for MagicPods goes to the original project; this
+fork only adds what the Frame needs. Licence: GPL-3.0, the same as the original.
 
-<p align="center">
-  <a href="https://store.steampowered.com/app/4486410/MagicPods_for_Linux/">
-    <img src="./docs/images/steambadge.webp" width="156">
-  </a>
-</p>
+## What you get on the Frame
 
-![](./docs/images/linux-banner.webp)
+- **Battery in the top bar**, next to the headset battery: one blue bar per earbud and
+  the percentage. Clicking it opens the MagicPods menu.
+- **A MagicPods tab** in the quick menu (the one the headset battery opens), with the
+  same menus as on the Steam Deck:
+  - **Headphones:** battery for each earbud and the case, noise control, ear detection
+    (pause when off-ear, switch to the speakers when both are out), conversation
+    awareness, equalizer, press-and-hold controls and the other options your headphones
+    support.
+  - **Devices:** Bluetooth on/off and connecting or disconnecting paired headphones.
+  - **Settings:** which noise modes to show, low-battery notifications, "Disable
+    headphone standby mode" and more.
+- **An earbuds row** under Battery Info.
+- **Low-battery notifications** that name the part, for example "MagicPods: Left earbud
+  18% remaining. Charge your headphones."
 
-Tested on Kubuntu 26.04, Ubuntu 26.04, and SteamOS 3.7.24.
+Works with AirPods, Beats, Galaxy Buds and Pixel Buds
+([list](docs/UPSTREAM-README.md#-supported-headphones)). It needs
+[MagicPodsCore for Steam Frame](https://github.com/jimas21/MagicPodsCore), the background
+service that talks to the headphones.
 
-## 🎨 Features
+## Install
 
-- Battery Monitoring - View headphone battery levels in the app, system tray, or through the [MagicPodsDecky](https://github.com/steam3d/MagicPodsDecky) plugin for Decky Loader.
-- Noise Control - Switch between noise cancellation, transparency, adaptive, and other available modes.
-- Pop-Up Animation - See an iPhone-style battery animation when opening the charging case of compatible AirPods or Beats.
-- Bluetooth Management - Connect and disconnect headphones, control Bluetooth, and switch audio profiles or codecs.
-- System Tray - Monitor battery levels and control your headphones without opening the main window.
-- Global Hotkeys - Assign keyboard shortcuts to headphone controls in Desktop Mode.
-- Background Startup - Automatically launch MagicPods in the background.
-- Steam Gaming Mode - Use MagicPods with a fullscreen interface optimized for SteamOS.
+### With frameplex
 
-## 🪄 Unlock AirPods & Beats Magic
+In frameplex, open **Settings › Earbuds** and choose **Install earbud support**. It
+installs MagicPodsCore and this menu and keeps them up to date. (Coming in the next
+frameplex beta.)
 
-Customize your AirPods and Beats without ever needing an iPhone.
+### Manually
 
-### HD Microphone
+1. Pair your headphones in the Frame's Bluetooth settings.
+2. Install MagicPodsCore: see its
+   [instructions](https://github.com/jimas21/MagicPodsCore#install).
+3. In a terminal on the Frame (Konsole, in Desktop Mode), download
+   `magicpods-frame-menu.tar.gz` from the
+   [latest release](https://github.com/jimas21/MagicPodsLinux/releases/latest), then:
 
-- Get significantly better microphone quality on compatible AirPods with the H2 chip compared to standard Bluetooth Hands-Free mode.
+   ```sh
+   tar -xzf magicpods-frame-menu.tar.gz
+   ./magicpods-frame-menu/install.sh
+   ```
 
-### Smart Audio
+4. Restart the headset once.
 
-- Conversation Awareness - Automatically lower audio volume when you start speaking.
-- Personalized Volume - Enable or disable personalized volume adjustments.
-- Ear Detection - Automatically pause playback, lower volume when you remove your earbuds.
-- Audio Output Switching - Automatically switch between headphones and system speakers when supported.
+To update, repeat step 3 with the new release. To remove:
+`~/.local/share/magicpods-app/frame/uninstall.sh` (MagicPodsCore and your headphone
+settings stay).
 
-### Noise Control
+Everything runs as your normal user; nothing needs root.
 
-- Adaptive Audio - Adjust how much outside noise you hear.
-- Noise Cancellation with One AirPod - Enable noise cancellation while wearing a single AirPod.
-- Earbud Noise Control Modes - Choose which modes are available when switching directly from your headphones.
-- Off Listening Mode - Enable or disable the Off listening mode on compatible AirPods.
+## How it works
 
-### Controls & Gestures
+The menu is a script that runs inside Steam's own VR interface, the same way Decky
+Loader adds its menus on the Steam Deck; the installer turns on the local connection
+Steam provides for that. A small background service keeps the script in place, shows the
+low-battery notifications through SteamVR and runs the standby fix. Everything talks to
+MagicPodsCore on the headset itself; nothing is sent anywhere else.
 
-- Customize press-and-hold actions for each earbud.
-- Adjust press speed and press-and-hold duration.
-- Configure single and double presses for call controls.
-- Customize volume swipe gestures.
-- Change Digital Crown rotation direction on supported AirPods Max models.
+It is unofficial: a Steam update can change Steam's menus. If that happens, the battery
+indicator or the tab may disappear until this project is updated; Steam itself and the
+headphone features (ear detection, speaker switching) keep working.
 
-### More Settings
+Details: [frame/README.md](frame/README.md).
 
-- Custom Equalizer - Adjust bass, mids, and treble.
-- Headphone Tones - Adjust the volume of built-in headphone tones.
-- Optimized Charge Limit - Manage charging optimization on compatible models.
-- Pause When Asleep - Configure automatic playback pausing on supported headphones.
+## About this repository
 
-*Available features depend on your headphone model and firmware. MagicPods automatically displays only the settings supported by your connected device.*
+- `frame/`: the Steam Frame menu (released as `magicpods-frame-menu.tar.gz`, signed).
+- `src/`: the original MagicPods desktop app (Qt), with small changes so it can work with
+  a separately running MagicPodsCore. The Frame does not use it.
+- The original project's README: [docs/UPSTREAM-README.md](docs/UPSTREAM-README.md).
+- The changes are on the `frame-arm64` branch.
 
-## 🎧 Supported Headphones
+## Credits and licence
 
-| Apple            | Beats                  | Samsung           | Google              |
-| ---------------- | ---------------------- | ----------------- | ------------------- |
-| AirPods 1        | PowerBeats Pro         | Galaxy Buds       | Pixel Buds A-Series |
-| AirPods 2        | PowerBeats Pro 2       | Galaxy Buds Plus  | Pixel Buds Pro      |
-| AirPods 3        | PowerBeats 3           | Galaxy Buds Live  | Pixel Buds Pro 2    |
-| AirPods 4        | PowerBeats 4           | Galaxy Buds Pro   | Pixel Buds 2a       |
-| AirPods 4 (ANC)  | Beats Fit Pro          | Galaxy Buds 2     |                     |
-| AirPods 5        | Beats Studio Buds      | Galaxy Buds 2 Pro |                     |
-| AirPods 5 (WCC)  | Beats Studio Buds Plus | Galaxy Buds FE    |                     |
-| AirPods Pro      | Beats Studio Pro       | Galaxy Buds 3     |                     |
-| AirPods Pro 2    | Beats Solo 3           | Galaxy Buds 3 Pro |                     |
-| AirPods Pro 3    | Beats Solo Pro         | Galaxy Buds Core  |                     |
-| AirPods Max      | Beats Studio 3         | Galaxy Buds 3 FE  |                     |
-| AirPods Max 2024 | Beats X                | Galaxy Buds 4     |                     |
-| AirPods Max 2    | Beats Flex             | Galaxy Buds 4 Pro |                     |
-|                  | Beats Solo Buds        |                   |                     |
-|                  | Beats Solo 4           |                   |                     |
-|                  | Beats 360              |                   |                     |
-|                  | Powerbeats Fit         |                   |                     |
-
-## 🚀 Getting started
-
-1. Download MagicPods from [Steam](https://store.steampowered.com/app/4486410/MagicPods_for_Linux/) or build it from source.
-2. Add your headphones to the Bluetooth devices list.
-3. Launch MagicPods and connect your headphones for the initial setup.
-4. Done! Battery animations, charge levels, and additional settings are now available.
-
-## 🧪 Ideas and bugs
-
-Join the community on [Discord](https://discord.com/invite/UyY4PY768V) to suggest ideas or report issues.
+- [MagicPods for Linux](https://github.com/steam3d/MagicPodsLinux),
+  [MagicPods for Decky](https://github.com/steam3d/MagicPodsDecky) and
+  [MagicPodsCore](https://github.com/steam3d/MagicPodsCore) by Aleksandr Maslov
+  (<https://magicpods.app>) and Andrei Litvintsev. The menu's noise-mode icons and its
+  behaviour follow MagicPods for Decky.
+- This fork and its changes: GPL-3.0, like the original.

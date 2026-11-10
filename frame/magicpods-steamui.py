@@ -291,23 +291,24 @@ class StandbyFix(threading.Thread):
                 due.append((key, pct))
         if not due:
             return
-        for key, _ in due:
-            self.low_armed[key] = False
-        self.notify(low_battery_message(due))
+        if self.notify(low_battery_message(due)):  # only mark shown once actually sent
+            for key, _ in due:
+                self.low_armed[key] = False
 
     def notify(self, text):
         """Show a SteamVR notification (SteamVR's own vrcmd tool, IVRNotifications)."""
         if not os.path.exists(VRCMD):
             log("low battery:", text, "(vrcmd not found, not shown)")
-            return
-        if time.monotonic() - self.last_notify < 30:  # never spam
-            return
+            return True  # nothing will change; don't retry on every update
+        if time.monotonic() - self.last_notify < 30:  # never spam; retried on the next update
+            return False
         self.last_notify = time.monotonic()
         log("notify:", text)
         try:
             subprocess.run([VRCMD, "--notify", text], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
         except (OSError, subprocess.SubprocessError) as error:
             log("notification failed:", error)
+        return True
 
     def find_sink(self):
         """The active headphones' A2DP output, e.g. bluez_output.AA_BB_CC_DD_EE_FF.1."""
