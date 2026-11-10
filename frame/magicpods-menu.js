@@ -84,6 +84,9 @@
         coreSend('GetSetting', { container: 'magicpods', setting: 'logLevel' });
         coreSend('GetSetting', { container: 'magicpodsframe', setting: 'standby_fix' });
         coreSend('GetSetting', { container: 'magicpodsframe', setting: 'low_battery' });
+        coreSend('GetSetting', { container: 'magicpodsframe', setting: 'auto_update' });
+        coreSend('GetSetting', { container: 'magicpodsframe', setting: 'update_request' });
+        coreSend('GetSetting', { container: 'magicpodsframe', setting: 'update_status' });
         render();
         return;
       }
@@ -424,6 +427,41 @@
     return h + '</div>';
   }
 
+  // Update status, written by the helper service as JSON text: {state, message, time}.
+  function updateStatus() {
+    let st = null;
+    try { st = JSON.parse(core.frameSettings.update_status || 'null'); } catch (e) { st = null; }
+    if (!st || typeof st !== 'object' || typeof st.message !== 'string') return null;
+    const inProgress = st.state === 'checking' || st.state === 'updating';
+    const busy = inProgress && Number(st.time) > Date.now() / 1000 - (st.state === 'checking' ? 90 : 900);
+    const message = inProgress && !busy ? 'The last update check did not finish. Try again.' : st.message;
+    return { busy, message, time: Number(st.time) || 0 };
+  }
+  function whenText(t) {
+    if (!t) return '';
+    const d = new Date(t * 1000);
+    const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return d.toDateString() === new Date().toDateString() ? 'today ' + hm : d.toLocaleDateString() + ' ' + hm;
+  }
+  function pageUpdates() {
+    const auto = core.frameSettings.auto_update !== false;
+    const st = updateStatus();
+    let h = `<div class="mp-h">Updates</div>` + toggleRow('Update automatically', auto, (v) => {
+      core.frameSettings.auto_update = v; coreSend('SetSetting', { container: 'magicpodsframe', setting: 'auto_update', value: v }); render();
+    }, { note: 'Checks for a new MagicPods every few hours and installs it.' });
+    const label = st && st.busy ? st.message : 'Check for updates';
+    h += `<div class="mp-row mp-col${st && st.busy ? ' mp-dis' : ''}"><div class="mp-choice"><button data-mp="${on(() => {
+      if (st && st.busy) return;
+      const n = Math.max(Math.floor(Date.now() / 1000), (Number(core.frameSettings.update_request) || 0) + 1);
+      if (!coreSend('SetSetting', { container: 'magicpodsframe', setting: 'update_request', value: n })) return;
+      core.frameSettings.update_request = n;
+      core.frameSettings.update_status = JSON.stringify({ state: 'checking', message: 'Checking for updates...', time: Math.floor(Date.now() / 1000) });
+      render();
+    })}">${esc(label)}</button></div>` +
+      (st && !st.busy ? `<div class="mp-note">${esc(st.message)}${st.time ? ' (' + esc(whenText(st.time)) + ')' : ''}</div>` : '') + `</div>`;
+    return h;
+  }
+
   function pageSettings() {
     let h = '<div class="mp-sec"><div class="mp-h">Displayed modes</div>';
     for (const m of ANC_MODES) h += toggleRow(m.label, !!settings['allow_' + m.key], (v) => saveSettings({ ['allow_' + m.key]: v }));
@@ -451,6 +489,7 @@
           core.coreSettings.logLevel = 50 - v; coreSend('SetSetting', { container: 'magicpods', setting: 'logLevel', value: 50 - v });
         });
       }
+      h += pageUpdates();
       h += `<div class="mp-note" style="margin-top:10px">MagicPodsCore ${esc(core.version || '')}</div>`;
     }
     return h + '</div>';

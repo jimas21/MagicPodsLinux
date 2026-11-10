@@ -59,3 +59,14 @@ in. If it keeps saying it is waiting for Steam, restart the headset once.
 Steam's DevTools connection has no password. It only listens on the headset, but any
 program running on the headset could use it to control Steam's interface, the same as
 with Decky Loader.
+
+## Updates
+
+The menu's **Settings › Updates** has **Check for updates** and **Update automatically**
+(on by default: first check 10 minutes after the helper starts, then every 6 hours).
+The helper runs `~/.local/share/magicpodscore/magicpods-frame-install.py --if-newer`
+in its own user unit, `magicpods-update` (it restarts the helper while it works). The
+installer checks each download's signature, installs only the parts that have a newer
+release, records what is installed in `~/.local/share/magicpods-app/versions.json`, and
+writes its progress to `~/.local/state/magicpods/update.json`, which the helper passes on
+to the menu. Log: `journalctl --user -u magicpods-update`.

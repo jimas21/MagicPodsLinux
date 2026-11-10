@@ -8,7 +8,7 @@ popup run the current magicpods-menu.js. The script itself then lives in those p
 it talks to MagicPodsCore directly and keeps its elements in place.
 
 Only the fixed contents of magicpods-menu.js are ever sent to Steam. Nothing listens
-on any port. Unofficial: if a Steam update changes these pages, the menu just does not
+on any port. If a Steam update changes these pages, the menu just does not
 appear and this keeps retrying quietly.
 
 Python 3 standard library only. License: GPL-3.0 (part of MagicPods for Linux).
@@ -157,6 +157,19 @@ STANDBY_KEY = "standby_fix"
 LOW_BATTERY_KEY = "low_battery"  # percent; 0 turns the notification off
 LOW_BATTERY_DEFAULT = 30          # same default as the MagicPods Decky plugin
 VRCMD = "/opt/steamvr/bin/linuxarm64/vrcmd"
+
+# Updates ("Check for updates" and "Update automatically" in the menu's Settings).
+# The update itself is the signed installer MagicPodsCore keeps beside its binary; it
+# runs in its own transient user unit, because it restarts this service.
+AUTO_UPDATE_KEY = "auto_update"        # bool, default on
+UPDATE_REQUEST_KEY = "update_request"  # int, Unix time of the menu's "Check for updates" press
+UPDATE_STATUS_KEY = "update_status"    # JSON text written here, shown by the menu
+UPDATER = os.path.expanduser("~/.local/share/magicpodscore/magicpods-frame-install.py")
+UPDATE_STATUS_FILE = os.path.join(
+    os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "magicpods", "update.json")
+UPDATE_UNIT = "magicpods-update"
+AUTO_UPDATE_FIRST = 10 * 60      # first automatic check, seconds after start
+AUTO_UPDATE_EVERY = 6 * 60 * 60  # then this often
 PART_NAMES = {"single": "", "left": "Left earbud", "right": "right earbud", "case": "Charging case"}
 
 
@@ -204,6 +217,12 @@ class StandbyFix(threading.Thread):
         self.last_info = {}
         self.low_armed = {k: True for k in PART_NAMES}
         self.last_notify = 0.0
+        self.auto_update = True
+        self.update_request = None   # last value seen
+        self.started_wall = time.time()  # presses from before this start are old news
+        self.status_sent = None      # last update status text sent to the core
+        self.next_auto_update = time.monotonic() + AUTO_UPDATE_FIRST
+        self.next_stale_check = 0.0
 
     def run(self):
         if not self.player:
@@ -232,6 +251,8 @@ class StandbyFix(threading.Thread):
                     raw = ws._read_message(time.monotonic() + 1.0)
                 except TimeoutError:
                     self.reconcile()
+                    if ready:
+                        self.tick_update(ws)
                     continue
                 try:
                     msg = json.loads(raw)
@@ -245,6 +266,8 @@ class StandbyFix(threading.Thread):
                         {"method": "GetActiveDeviceInfo"},
                         {"method": "GetSetting", "arguments": {"container": FRAME_SETTINGS, "setting": STANDBY_KEY}},
                         {"method": "GetSetting", "arguments": {"container": FRAME_SETTINGS, "setting": LOW_BATTERY_KEY}},
+                        {"method": "GetSetting", "arguments": {"container": FRAME_SETTINGS, "setting": AUTO_UPDATE_KEY}},
+                        {"method": "GetSetting", "arguments": {"container": FRAME_SETTINGS, "setting": UPDATE_REQUEST_KEY}},
                     ):
                         ws._send(0x1, json.dumps(request).encode())
                     continue
@@ -265,9 +288,88 @@ class StandbyFix(threading.Thread):
                     if isinstance(value, bool) and value != self.enabled:
                         self.enabled = value
                         log("standby fix", "enabled" if value else "disabled")
+                    auto = settings[FRAME_SETTINGS].get(AUTO_UPDATE_KEY)
+                    if isinstance(auto, bool) and auto != self.auto_update:
+                        self.auto_update = auto
+                        log("automatic updates", "on" if auto else "off")
+                    request = settings[FRAME_SETTINGS].get(UPDATE_REQUEST_KEY)
+                    if isinstance(request, int) and not isinstance(request, bool) and request != self.update_request:
+                        self.update_request = request
+                        if request > self.started_wall - 5:
+                            log("update check requested from the menu")
+                            self.start_update()
                 self.reconcile()
+                self.tick_update(ws)
         finally:
             ws.close()
+
+    def tick_update(self, ws):
+        """Run the automatic check when due, and pass the updater's progress on to the
+        menu (through the core, so every Steam page sees it)."""
+        if self.auto_update and time.monotonic() >= self.next_auto_update:
+            self.next_auto_update = time.monotonic() + AUTO_UPDATE_EVERY
+            log("automatic update check")
+            self.start_update()
+        try:
+            with open(UPDATE_STATUS_FILE, encoding="utf-8") as f:
+                text = f.read(4096)
+            st = json.loads(text)
+        except (OSError, ValueError):
+            return
+        if (isinstance(st, dict) and st.get("state") in ("checking", "updating")
+                and isinstance(st.get("time"), int) and time.time() - st["time"] > 60
+                and time.monotonic() >= self.next_stale_check):
+            self.next_stale_check = time.monotonic() + 30
+            if not self.update_running():
+                self.write_update_status("failed", "The last update check did not finish. Try again.")
+                return  # sent on the next tick
+        if text != self.status_sent:
+            ws._send(0x1, json.dumps({"method": "SetSetting", "arguments": {
+                "container": FRAME_SETTINGS, "setting": UPDATE_STATUS_KEY, "value": text}}).encode())
+            self.status_sent = text
+
+    def write_update_status(self, state, message):
+        try:
+            os.makedirs(os.path.dirname(UPDATE_STATUS_FILE), exist_ok=True)
+            tmp = UPDATE_STATUS_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"state": state, "message": message, "time": int(time.time())}, f)
+            os.replace(tmp, UPDATE_STATUS_FILE)
+        except OSError as error:
+            log("update status:", error)
+
+    def update_running(self):
+        try:
+            state = subprocess.run(["systemctl", "--user", "is-active", UPDATE_UNIT],
+                                   capture_output=True, text=True, timeout=10).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return state in ("active", "activating", "deactivating")
+
+    def start_update(self):
+        """Start the signed installer with --if-newer in its own user unit (it restarts
+        this service, which would otherwise end it halfway)."""
+        if not os.path.isfile(UPDATER):
+            self.write_update_status("failed", "Updates need a newer MagicPods: install it once more from the install button.")
+            return
+        if self.update_running():
+            log("an update is already running")
+            return
+        python = shutil.which("python3") or "/usr/bin/python3"
+        self.write_update_status("checking", "Checking for updates...")
+        try:
+            subprocess.run(["systemctl", "--user", "reset-failed", UPDATE_UNIT],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            r = subprocess.run(
+                ["systemd-run", "--user", "--quiet", "--collect", f"--unit={UPDATE_UNIT}",
+                 "--property=UnsetEnvironment=LD_LIBRARY_PATH LD_PRELOAD",
+                 python, "-I", UPDATER, "--if-newer", "--status-file", UPDATE_STATUS_FILE],
+                capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError) as error:
+            self.write_update_status("failed", f"Update failed: {error}")
+            return
+        if r.returncode != 0:
+            self.write_update_status("failed", "Update failed: " + (r.stderr.strip() or f"systemd-run exited {r.returncode}")[:200])
 
     def check_low_battery(self, info):
         """Once per connection per part, like the Decky plugin (which only says the
