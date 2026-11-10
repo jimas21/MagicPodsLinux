@@ -2,4 +2,4 @@
 build/
 dev/
 MagicPods-portable/
-tmp/
+tmp/__pycache__/

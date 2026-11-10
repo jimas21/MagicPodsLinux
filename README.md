@@ -1,11 +1,11 @@
 # MagicPods for Steam Frame
 
 This is a fork of [MagicPods for Linux](https://github.com/steam3d/MagicPodsLinux) by
-Aleksandr Maslov and Andrei Litvintsev, adapted for the **Steam Frame**. It brings the
+[Aleksandr Maslov](https://github.com/steam3d) and
+[Andrey Litvintsev](https://github.com/andreylitvintsev), adapted for the **Steam Frame**. It brings the
 menus of the [MagicPods Decky plugin](https://github.com/steam3d/MagicPodsDecky) into the
 Frame's own VR interface. All credit for MagicPods goes to the original project; this
-fork only adds what the Frame needs. Unofficial: not made by or affiliated with Valve or the MagicPods authors.
-Licence: GPL-3.0, the same as the original.
+fork only adds what the Frame needs. Licence: GPL-3.0, the same as the original.
 
 ## What you get on the Frame
 
@@ -48,24 +48,23 @@ On the Steam Frame:
 [`Uninstall-MagicPods.desktop`](https://github.com/jimas21/MagicPodsCore/releases/latest/download/Uninstall-MagicPods.desktop)
 the same way.
 
-Everything runs as your normal user; nothing needs root. Every release is signed, and the
-installer refuses a download whose signature does not match.
+Everything runs as your normal user; nothing needs root. Every download is checked before
+it is installed.
 
 ## How it works
 
-The menu is a script that runs inside Steam's own VR interface, the same way Decky
-Loader adds its menus on the Steam Deck; the installer turns on the local connection
-Steam provides for that. A small background service keeps the script in place, shows the
-low-battery notifications through SteamVR and runs the standby fix. Everything talks to
-MagicPodsCore on the headset itself; nothing is sent anywhere else.
+The installer adds the MagicPods menu to Steam's own screens on the headset, which is
+why the headset needs one restart after the first install. A small helper keeps the menu
+in place and shows the low-battery notifications. Everything stays on the headset;
+nothing is sent anywhere.
 
-It is unofficial: a Steam update can change Steam's menus. If that happens, the battery
-indicator or the tab may disappear until this project is updated; Steam itself and the
-headphone features (ear detection, speaker switching) keep working.
+If a Steam update changes Steam's menus, the battery icon or the
+MagicPods tab may disappear until this project is updated. Your earbuds keep working,
+including ear detection and switching to the speakers.
 
-Details: [frame/README.md](frame/README.md).
+Technical details: [frame/README.md](frame/README.md).
 
-## About this repository
+## For developers
 
 - `frame/`: the Steam Frame menu (released as `magicpods-frame-menu.tar.gz`, signed).
 - `src/`: the original MagicPods desktop app (Qt), with small changes so it can work with
@@ -77,8 +76,9 @@ Details: [frame/README.md](frame/README.md).
 
 - [MagicPods for Linux](https://github.com/steam3d/MagicPodsLinux),
   [MagicPods for Decky](https://github.com/steam3d/MagicPodsDecky) and
-  [MagicPodsCore](https://github.com/steam3d/MagicPodsCore) by Aleksandr Maslov
-  (<https://magicpods.app>) and Andrei Litvintsev. The menu's noise-mode icons and its
+  [MagicPodsCore](https://github.com/steam3d/MagicPodsCore) by
+  [Aleksandr Maslov](https://github.com/steam3d) (<https://magicpods.app>) and
+  [Andrey Litvintsev](https://github.com/andreylitvintsev). The menu's noise-mode icons and its
   behaviour follow MagicPods for Decky.
 - This fork and its changes: GPL-3.0, like the original (see [LICENSE](LICENSE)).
 - If MagicPods is useful to you, consider
