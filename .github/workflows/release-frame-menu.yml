@@ -1,0 +1,136 @@
+name: Release Frame menu
+
+# Packages frame/ (the MagicPods menu for Steam's VR UI) as a signed release.
+# Push a tag named like frame-menu-1 to create a DRAFT release with:
+#   magicpods-frame-menu.tar.gz         the menu files (they are their own source)
+#   magicpods-frame-menu.tar.gz.sha256
+#   magicpods-frame-menu.tar.gz.sig     base64 ed25519 signature over the exact tarball bytes
+# A person reviews and publishes the draft.
+
+on:
+  push:
+    tags:
+      - 'frame-menu-*'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  DIST_NAME: magicpods-frame-menu
+  # This repository's own release key (the MagicPodsCore releases use a different one).
+  MP_RELEASE_PUBKEY: 'jcgo8/3boB/B09Ac6pu26NTvNDBpfdY/yh9blxGIfuw='
+
+jobs:
+  package:
+    name: Package and sign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Check the files
+        run: |
+          node --check frame/magicpods-menu.js
+          python3 -m py_compile frame/magicpods-steamui.py
+          sh -n frame/install.sh
+          sh -n frame/uninstall.sh
+          if LC_ALL=C grep -nP '[\x00-\x08\x0b\x0c\x0e-\x1f]' frame/magicpods-menu.js frame/magicpods-steamui.py; then
+            echo "::error::control characters in the menu files"; exit 1
+          fi
+
+      - name: Assemble
+        env:
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          rm -rf dist out && mkdir -p "dist/${DIST_NAME}" out
+          d="dist/${DIST_NAME}"
+          cp frame/magicpods-menu.js frame/magicpods-steamui.py frame/magicpods-steamui.service \
+             frame/install.sh frame/uninstall.sh frame/README.md LICENSE "${d}/"
+          chmod 755 "${d}/install.sh" "${d}/uninstall.sh" "${d}/magicpods-steamui.py"
+          chmod 644 "${d}/magicpods-menu.js" "${d}/magicpods-steamui.service" "${d}/README.md" "${d}/LICENSE"
+          {
+            echo "MagicPods menu for Steam's VR UI, ${TAG}"
+            echo
+            echo "License: GNU GPL v3 (see LICENSE). These files are their own source code."
+            echo "  repository: ${SERVER_URL}/${REPOSITORY}"
+            echo "  commit:     ${COMMIT_SHA}"
+            echo "  tree:       ${SERVER_URL}/${REPOSITORY}/tree/${COMMIT_SHA}/frame"
+            echo "Noise-mode icons and menu behaviour follow MagicPodsDecky (GPL-3.0):"
+            echo "  https://github.com/steam3d/MagicPodsDecky"
+          } > "${d}/SOURCE.txt"
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$(git log -1 --format=%ct)" \
+              -C dist -czf "out/${DIST_NAME}.tar.gz" "${DIST_NAME}"
+          (cd out && sha256sum "${DIST_NAME}.tar.gz" > "${DIST_NAME}.tar.gz.sha256")
+          cat "out/${DIST_NAME}.tar.gz.sha256"
+          tar -tzvf "out/${DIST_NAME}.tar.gz"
+
+      # The seed is the MP_RELEASE_KEY secret (a '#' comment line, then base64 of the
+      # 32-byte seed). Its public key must equal MP_RELEASE_PUBKEY, or the job fails.
+      - name: Sign the tarball
+        env:
+          MP_RELEASE_KEY: ${{ secrets.MP_RELEASE_KEY }}
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/sign"
+          "${RUNNER_TEMP}/sign/bin/pip" install --quiet 'cryptography==44.0.0'
+          "${RUNNER_TEMP}/sign/bin/python" - "out/${DIST_NAME}.tar.gz" <<'PY'
+          import base64, os, sys
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+          from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+          lines = [l.strip() for l in os.environ.get("MP_RELEASE_KEY", "").splitlines()]
+          lines = [l for l in lines if l and not l.startswith("#")]
+          if len(lines) != 1:
+              sys.exit("MP_RELEASE_KEY: expected one base64 seed line after the comment")
+          seed = base64.b64decode(lines[0], validate=True)
+          if len(seed) != 32:
+              sys.exit("MP_RELEASE_KEY: seed is not 32 bytes")
+          key = Ed25519PrivateKey.from_private_bytes(seed)
+          pub = key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+          if base64.b64encode(pub).decode() != os.environ["MP_RELEASE_PUBKEY"]:
+              sys.exit("MP_RELEASE_KEY does not match the pinned public key")
+          path = sys.argv[1]
+          data = open(path, "rb").read()
+          sig = key.sign(data)
+          Ed25519PublicKey.from_public_bytes(base64.b64decode(os.environ["MP_RELEASE_PUBKEY"])).verify(sig, data)
+          with open(path + ".sig", "w") as out:
+              out.write(base64.b64encode(sig).decode())
+              out.write(chr(10))
+          print("signed", path, "and verified with the pinned public key")
+          PY
+          cat "out/${DIST_NAME}.tar.gz.sig"
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          cd out
+          sha="$(cut -d' ' -f1 "${DIST_NAME}.tar.gz.sha256")"
+          {
+            echo "MagicPods menu for Steam's VR UI on ARM64 SteamOS (Steam Frame), from commit ${SHA}."
+            echo
+            echo "Adds an earbuds battery indicator to the VR top bar and a MagicPods tab to the"
+            echo "quick-access popup. Needs MagicPodsCore (jimas21/MagicPodsCore) and Steam developer mode."
+            echo
+            echo "- \`${DIST_NAME}.tar.gz\` sha256 \`${sha}\`; ed25519 signature in \`${DIST_NAME}.tar.gz.sig\`"
+            echo "- Install: unpack, run \`./${DIST_NAME}/install.sh\`. See README.md inside."
+            echo
+            echo "License: GPL-3.0."
+          } > notes.md
+          gh release create "${TAG}" --repo "${REPO}" --draft --verify-tag \
+            --title "${TAG}" --notes-file notes.md \
+            "${DIST_NAME}.tar.gz" "${DIST_NAME}.tar.gz.sha256" "${DIST_NAME}.tar.gz.sig"

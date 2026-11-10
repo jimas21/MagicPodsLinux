@@ -30,7 +30,10 @@ import urllib.request
 CDP_LIST = "http://127.0.0.1:8080/json/list"
 PAGE_MARKS = ("vrOverlayKey=valve.steam.gamepadui.bar",)  # matches the bar and barpopup.* pages
 MENU_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "magicpods-menu.js")
-POLL_SECONDS = 3
+POLL_SECONDS = 3       # while something changed recently
+IDLE_POLL_SECONDS = 8  # once every page runs the current menu
+# Loopback only: never route these requests through a proxy from the environment.
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def log(*parts):
@@ -42,7 +45,7 @@ class CdpPage:
 
     def __init__(self, ws_url, timeout=4.0):
         url = urllib.parse.urlparse(ws_url)
-        if url.hostname not in ("127.0.0.1", "localhost"):
+        if url.hostname not in ("127.0.0.1", "localhost") or not url.port:
             raise ValueError("refusing a non-local DevTools URL")
         self.sock = socket.create_connection((url.hostname, url.port), timeout=timeout)
         key = base64.b64encode(os.urandom(16)).decode()
@@ -162,6 +165,15 @@ def sync_page(target, version, script):
         page.close()
 
 
+def list_pages():
+    with OPENER.open(CDP_LIST, timeout=3) as response:
+        targets = json.load(response)
+    if not isinstance(targets, list):
+        raise ValueError("unexpected DevTools target list")
+    return [t for t in targets if isinstance(t, dict) and isinstance(t.get("url"), str)
+            and any(m in t["url"] for m in PAGE_MARKS) and t.get("webSocketDebuggerUrl")]
+
+
 def main():
     stopping = {"flag": False}
 
@@ -173,44 +185,58 @@ def main():
     version, script = load_menu()
     log("menu version", version)
     last_status = None
+    page_results = {}  # page id -> last result, so each outcome is logged once
     while not stopping["flag"]:
+        changed = False
         try:
-            with urllib.request.urlopen(CDP_LIST, timeout=3) as response:
-                targets = json.load(response)
-            pages = [t for t in targets if any(m in t.get("url", "") for m in PAGE_MARKS) and t.get("webSocketDebuggerUrl")]
+            pages = list_pages()
             status = f"{len(pages)} Steam VR page(s)"
             for target in pages:
+                title = str(target.get("title") or "?")[:60]
                 try:
                     result = sync_page(target, version, script)
-                    if result:
-                        log(target.get("title", "?")[:60], "->", result)
-                except (OSError, ValueError, RuntimeError, TimeoutError, ConnectionError) as error:
-                    status = f"page error: {error}"
-        except (OSError, ValueError) as error:
-            status = f"waiting for Steam's DevTools endpoint ({error})"
+                except Exception as error:  # one bad page must not stop the others
+                    result = f"error: {type(error).__name__}: {error}"
+                if result is not None:
+                    changed = True
+                if result is not None and page_results.get(target.get("id")) != result:
+                    log(title, "->", result)
+                page_results[target.get("id")] = result
+        except Exception as error:  # Steam restarting, endpoint missing, odd replies
+            status = f"waiting for Steam's DevTools endpoint ({type(error).__name__}: {error})"
+            changed = True
         if status != last_status:
             log(status)
             last_status = status
-        for _ in range(POLL_SECONDS * 10):
+        delay = POLL_SECONDS if changed else IDLE_POLL_SECONDS
+        for _ in range(delay * 10):
             if stopping["flag"]:
                 break
             time.sleep(0.1)
-    # Leave Steam's pages as they were.
-    try:
-        with urllib.request.urlopen(CDP_LIST, timeout=3) as response:
-            for target in json.load(response):
-                if any(m in target.get("url", "") for m in PAGE_MARKS) and target.get("webSocketDebuggerUrl"):
-                    try:
-                        page = CdpPage(target["webSocketDebuggerUrl"])
-                        page.evaluate("window.__magicpodsMenu && window.__magicpodsMenu.teardown()")
-                        page.close()
-                    except Exception:
-                        pass
-    except Exception:
-        pass
+    teardown_all()
     log("stopped")
     return 0
 
 
+def teardown_all():
+    """Remove the menu from Steam's pages (also run by uninstall.sh via --teardown)."""
+    try:
+        pages = list_pages()
+    except Exception:
+        return
+    for target in pages:
+        try:
+            page = CdpPage(target["webSocketDebuggerUrl"])
+            try:
+                page.evaluate("window.__magicpodsMenu && window.__magicpodsMenu.teardown()")
+            finally:
+                page.close()
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--teardown"]:
+        teardown_all()
+        sys.exit(0)
     sys.exit(main())

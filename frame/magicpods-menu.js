@@ -26,9 +26,11 @@
   const ROLE = /gamepadui\.barpopup\./.test(document.title) ? 'popup'
     : (/gamepadui\.bar(?!popup)/.test(document.title) ? 'bar' : 'other');
   if (ROLE === 'other') return 'not a target page';
+  if (!document.body) return 'not ready';
 
   const cleanups = [];
   let dead = false;  // set by teardown: late callbacks (e.g. socket close) must not redraw
+  try {
   const channel = new BroadcastChannel('magicpods');
   cleanups.push(() => channel.close());
 
@@ -54,6 +56,13 @@
     coreSettings: {}, timer: null, closed: false };
   function coreConnect() {
     if (core.closed) return;
+    clearTimeout(core.timer);
+    if (core.ws) {  // drop any previous socket first, so only one is ever live
+      const old = core.ws;
+      core.ws = null;
+      old.onmessage = old.onclose = old.onerror = null;
+      try { old.close(); } catch (e) { }
+    }
     let ws;
     try { ws = new WebSocket(CORE_URL); } catch (e) { scheduleReconnect(); return; }
     core.ws = ws;
@@ -72,15 +81,16 @@
       }
       if (!core.ready) return;
       if ('info' in msg) core.info = (msg.info && Object.keys(msg.info).length) ? msg.info : null;
-      if ('headphones' in msg) { core.headphones = Array.isArray(msg.headphones) ? msg.headphones : []; pendingDevice = null; }
+      if ('headphones' in msg) { core.headphones = Array.isArray(msg.headphones) ? msg.headphones : []; clearPending(); }
       if ('defaultbluetooth' in msg) core.bluetooth = (msg.defaultbluetooth && 'enabled' in msg.defaultbluetooth) ? msg.defaultbluetooth : null;
       if (msg.settings && msg.settings.magicpods) Object.assign(core.coreSettings, msg.settings.magicpods);
       render();
     };
     ws.onclose = () => {
-      if (core.ws === ws) { core.ws = null; core.ready = false; core.info = null; core.headphones = null; core.bluetooth = null; }
-      render();
+      if (core.ws !== ws) return;  // a socket we already replaced
+      core.ws = null; core.ready = false; core.info = null; core.headphones = null; core.bluetooth = null;
       scheduleReconnect();
+      try { render(); } catch (e) { }
     };
     ws.onerror = () => { };
   }
@@ -97,7 +107,11 @@
   function setCapability(key, selected) {
     if (!core.info) return;
     const caps = core.info.capabilities || {};
-    if (caps[key]) caps[key] = Object.assign({}, caps[key], { selected });  // optimistic
+    if (caps[key]) {  // optimistic; merge partial objects such as {left: 5}
+      const cur = caps[key].selected;
+      const merged = (selected && typeof selected === 'object' && cur && typeof cur === 'object') ? Object.assign({}, cur, selected) : selected;
+      caps[key] = Object.assign({}, caps[key], { selected: merged });
+    }
     coreSend('SetCapabilities', { address: core.info.address, capabilities: { [key]: { selected } } });
     render();
   }
@@ -106,7 +120,13 @@
     clearTimeout(debouncers[key]);
     debouncers[key] = setTimeout(fn, 350);
   }
-  cleanups.push(() => { core.closed = true; clearTimeout(core.timer); if (core.ws) core.ws.close(); });
+  cleanups.push(() => {
+    core.closed = true; clearTimeout(core.timer);
+    for (const k of Object.keys(debouncers)) clearTimeout(debouncers[k]);
+    if (core.ws) { core.ws.onmessage = core.ws.onclose = core.ws.onerror = null; core.ws.close(); core.ws = null; }
+  });
+  // Current selected value of a multi-field capability, read at send time (not at render).
+  const live = (key) => ((core.info && core.info.capabilities && core.info.capabilities[key]) || {}).selected || {};
 
   // ---------- battery helpers ----------
   const OK = (c) => c && (c.status === 2 || c.status === 3) && typeof c.battery === 'number';
@@ -214,7 +234,10 @@
   cleanups.push(() => { const s = document.getElementById(STYLE_ID); if (s) s.remove(); });
 
   // ---------- small DOM builders (all values escaped) ----------
-  let pendingDevice = null;   // address being connected/disconnected
+  let pendingDevice = null;   // { address, target } while a connect/disconnect is in flight
+  let pendingTimer = null;
+  const holdDraft = { server: null, value: 0 };  // press-and-hold noise modes being edited
+  function clearPending() { pendingDevice = null; clearTimeout(pendingTimer); pendingTimer = null; }
   let interacting = false;    // pointer down inside the menu: hold re-renders
   let renderQueued = false;
   const handlers = new Map(); // id -> function(event, element)
@@ -275,14 +298,14 @@
     }
     if (caps.earDetection) {
       const s = caps.earDetection.selected || {};
-      const send = (patch) => setCapability('earDetection', Object.assign({ pauseMedia: !!s.pauseMedia, switchToSpeakers: !!s.switchToSpeakers, lowerVolume: s.lowerVolume | 0 }, patch));
+      const send = (patch) => { const c = live('earDetection'); setCapability('earDetection', Object.assign({ pauseMedia: !!c.pauseMedia, switchToSpeakers: !!c.switchToSpeakers, lowerVolume: c.lowerVolume | 0 }, patch)); };
       o += toggleRow('Pause when off-ear', !!s.pauseMedia, (v) => send({ pauseMedia: v }), { disabled: ro('earDetection') });
       o += sliderRow('Lower volume when off-ear', { min: 0, max: 100, value: s.lowerVolume | 0, unit: '%', offAtZero: true, disabled: ro('earDetection') }, (v) => send({ lowerVolume: v }));
       o += toggleRow('Switch to speaker when fully removed', !!s.switchToSpeakers, (v) => send({ switchToSpeakers: v }), { disabled: ro('earDetection') });
     }
     if (caps.conversationAwareness) {
       const s = caps.conversationAwareness.selected || {};
-      const send = (patch) => setCapability('conversationAwareness', Object.assign({ enabled: !!s.enabled, volume: s.volume | 0 }, patch));
+      const send = (patch) => { const c = live('conversationAwareness'); setCapability('conversationAwareness', Object.assign({ enabled: !!c.enabled, volume: c.volume | 0 }, patch)); };
       o += toggleRow('Conversation awareness', !!s.enabled, (v) => send({ enabled: v }), { disabled: ro('conversationAwareness') });
       o += sliderRow('Lower volume when talking', { min: 0, max: 100, value: s.volume | 0, unit: '%', offAtZero: true, disabled: ro('conversationAwareness') || !s.enabled }, (v) => send({ volume: v }));
     }
@@ -297,26 +320,30 @@
     }
     if (caps.pressAndHoldAirPodModeAnc) {
       const c = caps.pressAndHoldAirPodModeAnc;
-      const sel = c.selected === -1 ? 0 : (c.selected | 0);
       const avail = HOLD_MODES.filter((m) => (c.options | 0) & m.bit);
+      const server = c.selected === -1 ? 0 : ((c.selected | 0) & (c.options | 0));
+      if (holdDraft.server !== server) { holdDraft.server = server; holdDraft.value = server; }
+      const draft = holdDraft.value;
+      const count = [1, 2, 4, 8].filter((x) => draft & x).length;
       o += `<div class="mp-row mp-col${c.readonly ? ' mp-dis' : ''}"><span>Noise control from headphones</span><div class="mp-choice">` +
         avail.map((m) => {
           const mode = ANC_MODES.find((x) => x.key === m.key);
-          return `<button class="${sel & m.bit ? 'mp-on' : ''}" data-mp="${on(() => {
-            const next = sel ^ m.bit;
-            const count = [1, 2, 4, 8].filter((x) => next & x).length;
-            if (count === 1) return;  // the headphones need at least two modes
-            setCapability('pressAndHoldAirPodModeAnc', next || -1);
-          })}">${esc(mode ? mode.label : m.key)}</button>`;
-        }).join('') +
-        `</div><div class="mp-note">${sel ? '' : "Don't change. "}Select at least two modes, or clear all to leave the setting unchanged.</div></div>`;
+          return `<button class="${draft & m.bit ? 'mp-on' : ''}" data-mp="${on(() => { holdDraft.value = draft ^ m.bit; render(); })}">${esc(mode ? mode.label : m.key)}</button>`;
+        }).join('') + `</div>`;
+      if (draft !== server) {
+        o += `<div class="mp-choice"><button class="mp-on" ${count === 1 ? 'disabled style="opacity:.4"' : ''} data-mp="${on(() => {
+          if ([1, 2, 4, 8].filter((x) => holdDraft.value & x).length === 1) return;
+          setCapability('pressAndHoldAirPodModeAnc', holdDraft.value || -1);
+        })}">Apply</button><button data-mp="${on(() => { holdDraft.value = server; render(); })}">Cancel</button></div>`;
+      }
+      o += `<div class="mp-note">${draft ? '' : "Don't change. "}Select at least two modes, or clear all to leave the setting unchanged.</div></div>`;
     }
     if (caps.adaptiveAudioNoise) o += sliderRow('Adaptive mode', { min: 0, max: 100, step: 50, value: caps.adaptiveAudioNoise.selected | 0, labels: { 0: 'More noise', 50: 'Default', 100: 'Less noise' }, ticks: ['More noise', 'Default', 'Less noise'], disabled: ro('adaptiveAudioNoise') }, (v) => setCapability('adaptiveAudioNoise', v));
     if (caps.ancOneAirPod) o += toggleRow('Noise cancellation with one earbud', !!caps.ancOneAirPod.selected, (v) => setCapability('ancOneAirPod', v), { disabled: ro('ancOneAirPod') });
     if (caps.ancOffMode) o += choiceRow('Off Listening Mode', [{ value: -1, label: "Don't Change" }, { value: 1, label: 'Enabled' }, { value: 2, label: 'Disabled' }], caps.ancOffMode.selected, (v) => setCapability('ancOffMode', v), { disabled: ro('ancOffMode') });
     if (caps.customEq) {
       const s = caps.customEq.selected || {};
-      const send = (patch) => setCapability('customEq', Object.assign({ enabled: !!s.enabled, low: s.low | 0, mid: s.mid | 0, high: s.high | 0 }, patch));
+      const send = (patch) => { const c = live('customEq'); setCapability('customEq', Object.assign({ enabled: !!c.enabled, low: c.low | 0, mid: c.mid | 0, high: c.high | 0 }, patch)); };
       const off = ro('customEq') || !s.enabled;
       o += toggleRow('Equalizer', !!s.enabled, (v) => send({ enabled: v }), { disabled: ro('customEq') });
       for (const [k, name] of [['low', 'Low'], ['mid', 'Mid'], ['high', 'High']]) {
@@ -352,12 +379,16 @@
     }
     const list = (core.headphones || []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
     if (list.length) {
-      h += `<div class="mp-h">Headphones</div>` + list.map((d) => toggleRow(d.name, !!d.connected || pendingDevice === d.address, (v) => {
-        pendingDevice = d.address;
-        coreSend(v ? 'ConnectDevice' : 'DisconnectDevice', { address: d.address });
-        setTimeout(() => { if (pendingDevice === d.address) { pendingDevice = null; coreSend('GetDevices'); } }, 15000);
-        render();
-      }, { disabled: pendingDevice === d.address })).join('');
+      h += `<div class="mp-h">Headphones</div>` + list.map((d) => {
+        const pending = pendingDevice && pendingDevice.address === d.address;
+        return toggleRow(d.name, pending ? pendingDevice.target : !!d.connected, (v) => {
+          clearPending();
+          pendingDevice = { address: d.address, target: v };
+          coreSend(v ? 'ConnectDevice' : 'DisconnectDevice', { address: d.address });
+          pendingTimer = setTimeout(() => { clearPending(); coreSend('GetDevices'); render(); }, 15000);
+          render();
+        }, { disabled: pending, note: pending ? (pendingDevice.target ? 'Connecting...' : 'Disconnecting...') : '' });
+      }).join('');
     } else {
       h += `<div class="mp-msg">No paired headphones. Pair them in Steam's Bluetooth settings.</div>`;
     }
@@ -367,7 +398,7 @@
   function pageSettings() {
     let h = '<div class="mp-sec"><div class="mp-h">Displayed modes</div>';
     for (const m of ANC_MODES) h += toggleRow(m.label, !!settings['allow_' + m.key], (v) => saveSettings({ ['allow_' + m.key]: v }));
-    h += `<div class="mp-h">Battery</div>` + sliderRow('Low battery warning', { min: 0, max: 100, value: settings.low_battery, unit: '%', offAtZero: true }, (v) => saveSettings({ low_battery: v }));
+    h += `<div class="mp-h">Battery</div>` + sliderRow('Low battery highlight', { min: 0, max: 100, value: settings.low_battery, unit: '%', offAtZero: true }, (v) => saveSettings({ low_battery: v }));
     if (core.ready) {
       const anim = core.coreSettings.animation;
       if (typeof anim === 'boolean') {
@@ -390,6 +421,9 @@
   const TAB_ID = 'magicpods-qam-tab';
   const OVERLAY_ID = 'magicpods-overlay';
   let menuOpen = false;
+  let releaseTimer = null;
+  const tabStyles = new Map();  // native tab -> original inline width/minWidth/flex
+  let stripListener = null, listenedStrip = null;
   let wantOpenUntil = 0;
 
   function popupParts() {
@@ -443,15 +477,20 @@
       strip.appendChild(tab);
     }
     const n = strip.children.length;
-    for (const t of strip.children) { t.style.width = (100 / n) + '%'; t.style.minWidth = '0'; t.style.flex = '1 1 0'; }
-    if (!strip.__mpListener) {
-      strip.__mpListener = (ev) => {
+    for (const t of strip.children) {
+      if (t.id !== TAB_ID && !tabStyles.has(t)) tabStyles.set(t, { width: t.style.width, minWidth: t.style.minWidth, flex: t.style.flex });
+      t.style.width = (100 / n) + '%'; t.style.minWidth = '0'; t.style.flex = '1 1 0';
+    }
+    if (listenedStrip !== strip) {
+      if (listenedStrip && stripListener) listenedStrip.removeEventListener('click', stripListener, true);
+      stripListener = (ev) => {
         const t = document.getElementById(TAB_ID);
         if (t && t.contains(ev.target)) return;
         const clicked = [...strip.children].find((c) => c.contains(ev.target));
         setMenuOpen(false, clicked);
       };
-      strip.addEventListener('click', strip.__mpListener, true);
+      strip.addEventListener('click', stripListener, true);
+      listenedStrip = strip;
     }
     let overlay = document.getElementById(OVERLAY_ID);
     if (!overlay || overlay.parentElement !== root || overlay.dataset.mpVersion !== VERSION) {
@@ -462,9 +501,9 @@
       overlay.addEventListener('click', onMenuEvent);
       overlay.addEventListener('input', onMenuEvent);
       overlay.addEventListener('change', onMenuEvent);
-      overlay.addEventListener('pointerdown', () => { interacting = true; }, true);
-      const release = () => { interacting = false; if (renderQueued) { renderQueued = false; render(); } };
-      overlay.addEventListener('pointerup', () => setTimeout(release, 400), true);
+      const release = () => { clearTimeout(releaseTimer); interacting = false; if (renderQueued) { renderQueued = false; render(); } };
+      overlay.addEventListener('pointerdown', () => { interacting = true; clearTimeout(releaseTimer); releaseTimer = setTimeout(release, 5000); }, true);
+      overlay.addEventListener('pointerup', () => { clearTimeout(releaseTimer); releaseTimer = setTimeout(release, 400); }, true);
       overlay.addEventListener('pointercancel', release, true);
       if (getComputedStyle(root).position === 'static') root.style.position = 'relative';
       root.appendChild(overlay);
@@ -507,6 +546,7 @@
     if (el.tagName === 'INPUT') { fn(ev, el); return; }
     if (ev.type !== 'click') return;
     ev.preventDefault(); ev.stopPropagation();
+    interacting = false; renderQueued = false;
     fn(ev, el);
   }
   function ensureBatteryRow(panel) {
@@ -592,6 +632,13 @@
     const title = (core.info.name || 'Headphones') + ': ' + b.map((c) => `${c.label} ${c.battery}%${c.charging ? ' charging' : ''}`).join(', ');
     el.setAttribute('aria-label', title); el.title = title;
   }
+  cleanups.push(() => {
+    if (ROLE === 'popup') { try { setMenuOpen(false); } catch (e) { } }
+    if (listenedStrip && stripListener) listenedStrip.removeEventListener('click', stripListener, true);
+    for (const [t, st] of tabStyles) { if (t.isConnected) { t.style.width = st.width; t.style.minWidth = st.minWidth; t.style.flex = st.flex; } }
+    tabStyles.clear();
+    clearTimeout(releaseTimer); clearPending();
+  });
   cleanups.push(() => { for (const id of [IND_ID, TAB_ID, OVERLAY_ID, 'magicpods-battery-row']) { const e = document.getElementById(id); if (e) e.remove(); } });
 
   // ---------- wiring ----------
@@ -638,4 +685,10 @@
   ensure();
   if (ROLE === 'bar') channel.postMessage({ type: 'hello' });
   return 'installed ' + VERSION + ' (' + ROLE + ')';
+  } catch (e) {
+    dead = true;
+    for (const c of cleanups.reverse()) { try { c(); } catch (_) { } }
+    if (window.__magicpodsMenu && window.__magicpodsMenu.version === VERSION) delete window.__magicpodsMenu;
+    throw e;
+  }
 })()
