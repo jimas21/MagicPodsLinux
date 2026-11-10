@@ -24,8 +24,14 @@
   // Steam names these overlay pages "SteamVR - valve.steam.gamepadui.bar (id)" and
   // "SteamVR - valve.steam.gamepadui.barpopup.<id> (id)".
   const ROLE = /gamepadui\.barpopup\./.test(document.title) ? 'popup'
-    : (/gamepadui\.bar(?!popup)/.test(document.title) ? 'bar' : 'other');
+    : (/gamepadui\.bar(?!popup)/.test(document.title) ? 'bar'
+      : (document.title === 'SharedJSContext' ? 'shared' : 'other'));
   if (ROLE === 'other') return 'not a target page';
+  if (ROLE === 'shared') {
+    // Reserved for later use; nothing runs here now (alerts are SteamVR notifications).
+    window.__magicpodsMenu = { version: VERSION, role: ROLE, ensure() { }, teardown() { delete window.__magicpodsMenu; } };
+    return 'installed ' + VERSION + ' (shared, idle)';
+  }
   if (!document.body) return 'not ready';
 
   const cleanups = [];
@@ -37,7 +43,7 @@
   // ---------- settings kept in this browser profile (shared by both pages) ----------
   const DEFAULTS = {
     low_battery: 30, allow_off: true, allow_transparency: true, allow_adaptive: true,
-    allow_wind: true, allow_anc: true, tab: 'device',
+    allow_wind: true, allow_anc: true, tab: 'device', auto_tab: true, click_action: 'menu',
   };
   function loadSettings() {
     try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem('magicpods.settings') || '{}')); }
@@ -53,7 +59,7 @@
 
   // ---------- MagicPodsCore client ----------
   const core = { ws: null, ready: false, version: null, info: null, headphones: null, bluetooth: null,
-    coreSettings: {}, timer: null, closed: false };
+    coreSettings: {}, frameSettings: {}, timer: null, closed: false };
   function coreConnect() {
     if (core.closed) return;
     clearTimeout(core.timer);
@@ -76,6 +82,8 @@
         coreSend('GetAll');
         coreSend('GetSetting', { container: 'magicpods', setting: 'animation' });
         coreSend('GetSetting', { container: 'magicpods', setting: 'logLevel' });
+        coreSend('GetSetting', { container: 'magicpodsframe', setting: 'standby_fix' });
+        coreSend('GetSetting', { container: 'magicpodsframe', setting: 'low_battery' });
         render();
         return;
       }
@@ -84,6 +92,7 @@
       if ('headphones' in msg) { core.headphones = Array.isArray(msg.headphones) ? msg.headphones : []; clearPending(); }
       if ('defaultbluetooth' in msg) core.bluetooth = (msg.defaultbluetooth && 'enabled' in msg.defaultbluetooth) ? msg.defaultbluetooth : null;
       if (msg.settings && msg.settings.magicpods) Object.assign(core.coreSettings, msg.settings.magicpods);
+      if (msg.settings && msg.settings.magicpodsframe) Object.assign(core.frameSettings, msg.settings.magicpodsframe);
       render();
     };
     ws.onclose = () => {
@@ -137,8 +146,12 @@
       .filter(([k]) => OK(b[k])).map(([k, label]) => Object.assign({ key: k, label }, b[k]));
     return list.length ? list : null;
   }
+  function lowThreshold() {
+    const v = core.frameSettings && core.frameSettings.low_battery;
+    return typeof v === 'number' ? v : 30;
+  }
   function isLow(c) {
-    const t = settings.low_battery;
+    const t = lowThreshold();
     return t > 0 && c.status === 2 && !c.charging && c.battery !== 0 && c.battery <= t;
   }
 
@@ -180,6 +193,7 @@
       `<rect x="3" y="${5 + 20 - h}" width="10" height="${h}" fill="${color}"/>` +
       (c.charging ? '<path transform="translate(4.5 10)" d="M0 6.25L3.5 0V3.75H7L3.5 10V6.25H0Z" fill="white"/>' : '') + '</svg>';
   }
+  const HD_MIC_HELP = "Provides significantly better audio and microphone quality than Bluetooth Hands-Free (headset) mode. However, audio playback quality is still noticeably lower than in regular headphone mode.\n\nWhen enabled, the \"MagicPods Virtual Mic\" audio input device is automatically created and selected. When disabled, audio transmission stops and the device is removed.\n\nIf the microphone isn't working, make sure \"MagicPods Virtual Mic\" is selected as the audio input device.\n\nDisable \"Conversation Awareness\" in your headphones' settings to prevent the volume from automatically decreasing while using the microphone.";
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 
   // ---------- styles ----------
@@ -219,6 +233,10 @@
   .mp-choice button.mp-on { background:#1a9fff; color:#fff; }
   .mp-note { font-size:11px; color:#8b929a; line-height:1.3; }
   .mp-dev { display:flex; align-items:center; gap:8px; }
+  .mp-info { flex:none; width:22px; height:22px; border-radius:50%; border:1px solid #8b929a; background:transparent; color:#b8bcbf; font:inherit; font-size:12px; font-weight:700; cursor:pointer; padding:0; margin-right:8px; }
+  .mp-info.mp-on { background:#1a9fff; border-color:#1a9fff; color:#fff; }
+  .mp-infotext { font-size:12px; color:#b8bcbf; line-height:1.35; white-space:pre-line; padding:4px 0 8px; border-bottom:1px solid #23262e; }
+  .mp-infotext table { width:100%; border-collapse:collapse; } .mp-infotext td { padding:3px 4px; vertical-align:top; border-top:1px solid #23262e; } .mp-infotext td:first-child { color:#fff; white-space:nowrap; }
   #magicpods-battery-row { display:flex; align-items:center; gap:10px; padding:10px 16px; cursor:pointer; color:#dcdedf; border-top:1px solid #23262e; }
   #magicpods-battery-row .mp-name { flex:1; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #magicpods-battery-row .mp-cells { display:flex; gap:10px; font-size:12px; }
@@ -240,13 +258,22 @@
   function clearPending() { pendingDevice = null; clearTimeout(pendingTimer); pendingTimer = null; }
   let interacting = false;    // pointer down inside the menu: hold re-renders
   let renderQueued = false;
+  const infoOpen = {};  // which (i) explanations are expanded
+  function infoButton(key) {
+    return `<button class="mp-info${infoOpen[key] ? ' mp-on' : ''}" aria-label="More information" data-mp="${on(() => { infoOpen[key] = !infoOpen[key]; render(); })}">i</button>`;
+  }
+  function infoBlock(key, html) {
+    return infoOpen[key] ? `<div class="mp-infotext">${html}</div>` : '';
+  }
   const handlers = new Map(); // id -> function(event, element)
   let hid = 0;
   const on = (fn) => { const id = 'h' + (++hid); handlers.set(id, fn); return id; };
 
   function toggleRow(label, checked, fn, opts = {}) {
     return `<div class="mp-row${opts.disabled ? ' mp-dis' : ''}"><span>${esc(label)}${opts.note ? `<div class="mp-note">${esc(opts.note)}</div>` : ''}</span>` +
-      `<button class="mp-sw${checked ? ' mp-on' : ''}" data-mp="${on(() => fn(!checked))}" aria-pressed="${checked ? 'true' : 'false'}"></button></div>`;
+      (opts.info ? infoButton(opts.info.key) : '') +
+      `<button class="mp-sw${checked ? ' mp-on' : ''}" data-mp="${on(() => fn(!checked))}" aria-pressed="${checked ? 'true' : 'false'}"></button></div>` +
+      (opts.info ? infoBlock(opts.info.key, esc(opts.info.text)) : '');
   }
   function sliderRow(label, o, fn) {
     const id = on((ev, el) => {
@@ -262,7 +289,8 @@
       `<output>${esc(fmt(Number(o.value)))}</output></div>${ticks}</div>`;
   }
   function choiceRow(label, options, value, fn, opts = {}) {
-    return `<div class="mp-row mp-col${opts.disabled ? ' mp-dis' : ''}"><span>${esc(label)}</span><div class="mp-choice">` +
+    const head = opts.info ? `<div class="mp-dev"><span style="flex:1">${esc(label)}</span>${infoButton(opts.info.key)}</div>` : `<span>${esc(label)}</span>`;
+    return `<div class="mp-row mp-col${opts.disabled ? ' mp-dis' : ''}">${head}${opts.info ? infoBlock(opts.info.key, opts.info.html) : ''}<div class="mp-choice">` +
       options.map((o) => `<button class="${o.value === value ? 'mp-on' : ''}" data-mp="${on(() => fn(o.value))}">${esc(o.label)}</button>`).join('') +
       `</div>${opts.note ? `<div class="mp-note">${esc(opts.note)}</div>` : ''}</div>`;
   }
@@ -287,14 +315,15 @@
     }
     if (caps.highResolutionMicrophone) {
       const c = caps.highResolutionMicrophone;
-      h += toggleRow('HD Microphone', !!c.selected, (v) => setCapability('highResolutionMicrophone', v), { disabled: c.readonly });
+      h += toggleRow('HD Microphone', !!c.selected, (v) => setCapability('highResolutionMicrophone', v), { disabled: c.readonly, info: { key: 'hdmic', text: HD_MIC_HELP } });
     }
 
     let o = '';
     const ro = (k) => !!(caps[k] && caps[k].readonly);
     if (caps.bluetoothCodec && Array.isArray(caps.bluetoothCodec.options)) {
       const c = caps.bluetoothCodec;
-      o += choiceRow('Bluetooth codec', c.options.map((x) => ({ value: x[0], label: x[0] })), c.selected, (v) => setCapability('bluetoothCodec', v));
+      const table = '<table><tr><td>Codec</td><td>Description</td></tr>' + c.options.map((x) => `<tr><td>${esc(x[0])}</td><td>${esc(x[1])}</td></tr>`).join('') + '</table>';
+      o += choiceRow('Bluetooth codec', c.options.map((x) => ({ value: x[0], label: x[0] })), c.selected, (v) => setCapability('bluetoothCodec', v), { info: { key: 'codec', html: table } });
     }
     if (caps.earDetection) {
       const s = caps.earDetection.selected || {};
@@ -398,8 +427,18 @@
   function pageSettings() {
     let h = '<div class="mp-sec"><div class="mp-h">Displayed modes</div>';
     for (const m of ANC_MODES) h += toggleRow(m.label, !!settings['allow_' + m.key], (v) => saveSettings({ ['allow_' + m.key]: v }));
-    h += `<div class="mp-h">Battery</div>` + sliderRow('Low battery highlight', { min: 0, max: 100, value: settings.low_battery, unit: '%', offAtZero: true }, (v) => saveSettings({ low_battery: v }));
+    h += `<div class="mp-h">Menu</div>` +
+      toggleRow('Auto-select tab', !!settings.auto_tab, (v) => saveSettings({ auto_tab: v }), { note: 'When opening the menu, show Devices if no headphones are connected.' }) +
+      choiceRow('Clicking the battery icon', [{ value: 'menu', label: 'Opens this menu' }, { value: 'cycle', label: 'Cycles noise control' }], settings.click_action, (v) => saveSettings({ click_action: v }),
+        { note: 'With "Cycles noise control", open the menu from the MagicPods tab or Battery Info.' });
+    h += `<div class="mp-h">Battery</div>` + sliderRow('Low battery notification', { min: 0, max: 100, value: lowThreshold(), unit: '%', offAtZero: true }, (v) => {
+        core.frameSettings.low_battery = v; coreSend('SetSetting', { container: 'magicpodsframe', setting: 'low_battery', value: v }); render();
+      });
     if (core.ready) {
+      const standby = core.frameSettings.standby_fix === true;
+      h += `<div class="mp-h">Headphones</div>` + toggleRow('Disable headphone standby mode', standby, (v) => {
+        core.frameSettings.standby_fix = v; coreSend('SetSetting', { container: 'magicpodsframe', setting: 'standby_fix', value: v }); render();
+      }, { note: 'Fixes endless connect/disconnect of headphones by keeping the link awake with inaudible silence. Uses a little more battery while on.' });
       const anim = core.coreSettings.animation;
       if (typeof anim === 'boolean') {
         h += `<div class="mp-h">Core</div>` + toggleRow('Headphones animation', anim, (v) => {
@@ -536,7 +575,13 @@
     if (menuOpen === open) { applyTabState(); return; }
     menuOpen = open;
     applyTabState(null, clicked);
-    if (open) { const ov = document.getElementById(OVERLAY_ID); if (ov) ov.scrollTop = 0; render(); }
+    if (open) {
+      if (settings.auto_tab && core.ready) {
+        const want = core.info ? (settings.tab === 'headphones' ? 'device' : settings.tab) : 'headphones';
+        if (want !== settings.tab) settings = Object.assign({}, settings, { tab: want });
+      }
+      const ov = document.getElementById(OVERLAY_ID); if (ov) ov.scrollTop = 0; render();
+    }
   }
   function onMenuEvent(ev) {
     const el = ev.target.closest('[data-mp]');
@@ -584,6 +629,15 @@
     overlay.scrollTop = top;
   }
 
+  // Next allowed noise mode after the current one (wraps); null if fewer than two.
+  function nextAncMode() {
+    const anc = core.info && core.info.capabilities && core.info.capabilities.anc;
+    if (!anc || anc.readonly) return null;
+    const modes = ANC_MODES.filter((m) => (anc.options & m.bit) && settings['allow_' + m.key]).map((m) => m.bit);
+    if (modes.length < 2) return null;
+    return modes.find((b) => b > anc.selected) || modes[0];
+  }
+
   // ---------- bar: indicator ----------
   const IND_ID = 'magicpods-bar-indicator';
   let popupVisible = false;
@@ -602,6 +656,10 @@
       el.style.alignSelf = 'center';
       el.addEventListener('click', (ev) => {
         ev.preventDefault(); ev.stopPropagation();
+        if (settings.click_action === 'cycle') {
+          const next = nextAncMode();
+          if (next != null) { setCapability('anc', next); return; }
+        }
         channel.postMessage({ type: 'open' });
         if (!popupVisible) {
           const a = document.querySelector('[aria-label^="Headset Battery"]');

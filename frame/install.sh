@@ -28,6 +28,14 @@ if [ "$src" != "$dest" ]; then
     done
 fi
 chmod 755 "$dest/magicpods-steamui.py" "$dest/install.sh" "$dest/uninstall.sh"
+
+# Ask Steam to keep its local DevTools endpoint (127.0.0.1:8080) on even when Steam
+# developer mode is off; the menu needs nothing else from developer mode. This is the
+# same marker file Decky Loader uses. Takes effect the next time Steam starts.
+marker="$HOME/.steam/steam/.cef-enable-remote-debugging"
+if [ -d "$HOME/.steam/steam" ] && [ ! -e "$marker" ]; then
+    touch "$marker" && touch "$dest/.created-cef-marker"
+fi
 cp -f "$dest/magicpods-steamui.service" "$units/magicpods-steamui.service"
 systemctl --user daemon-reload
 systemctl --user enable magicpods-steamui.service

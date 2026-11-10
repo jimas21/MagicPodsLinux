@@ -11,6 +11,10 @@ if [ -f "$dest/magicpods-steamui.py" ]; then
     python3 -I "$dest/magicpods-steamui.py" --teardown 2>/dev/null
 fi
 rm -f "$units/magicpods-steamui.service"
+# Remove Steam's DevTools marker only if this installer created it.
+if [ -e "$dest/.created-cef-marker" ]; then
+    rm -f "$HOME/.steam/steam/.cef-enable-remote-debugging"
+fi
 systemctl --user daemon-reload
 rm -rf "$dest"
 rmdir "$HOME/.local/share/magicpods-app" 2>/dev/null

@@ -15,10 +15,12 @@ It needs:
 - MagicPodsCore running as the same user (`magicpodscore.service`, see the
   MagicPodsCore `docs/FRAME.md`). The menu talks to it directly on
   `ws://127.0.0.1:2020`; no other program or window is involved.
-- **Steam developer mode on.** That is what starts Steam with its local DevTools endpoint
-  (`-cef-enable-debugging`, 127.0.0.1:8080). With developer mode off the menu does not
-  appear; MagicPodsCore itself keeps working. No Steam restart is needed to install,
-  update or remove the menu.
+- Steam's local DevTools endpoint (127.0.0.1:8080). Steam opens it when Steam developer
+  mode is on, or when the file `~/.steam/steam/.cef-enable-remote-debugging` exists (the
+  same switch Decky Loader uses). `install.sh` creates that file, so developer mode can be
+  turned off after the next Steam restart. Without the endpoint the menu does not appear;
+  MagicPodsCore keeps working. No Steam restart is needed to install, update or remove the
+  menu itself.
 - `python3` (part of SteamOS).
 
 ## Install, update, remove
@@ -44,6 +46,8 @@ This is unofficial. A Steam update can change these pages; the menu then does no
 appear until the script is updated, and nothing else is affected. Menu preferences
 (displayed noise modes, low-battery level) are kept in Steam's browser storage.
 
-Steam's DevTools endpoint is unauthenticated and, in developer mode, is also forwarded
-to the network on port 8081. That is Steam's setting, not this tool's; turn developer
-mode off when you do not need it.
+Steam's DevTools endpoint is unauthenticated. With SteamOS developer mode on, the headset
+also forwards it to the network on port 8081; with developer mode off it stays on the
+headset only. Low-battery alerts are SteamVR notifications (via SteamVR's `vrcmd`).
+"Disable headphone standby mode" streams digital silence to the headphones with `pw-cat`,
+pinned to their output, while it is on.

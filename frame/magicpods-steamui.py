@@ -15,14 +15,18 @@ Python 3 standard library only. License: GPL-3.0 (part of MagicPods for Linux).
 """
 
 import base64
+import ctypes
 import hashlib
 import json
 import os
 import select
+import shutil
 import signal
 import socket
 import struct
+import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -147,6 +151,231 @@ class CdpPage:
         self.sock.close()
 
 
+CORE_URL = "ws://127.0.0.1:2020/"
+FRAME_SETTINGS = "magicpodsframe"  # MagicPodsCore settings container used by the menu
+STANDBY_KEY = "standby_fix"
+LOW_BATTERY_KEY = "low_battery"  # percent; 0 turns the notification off
+LOW_BATTERY_DEFAULT = 30          # same default as the MagicPods Decky plugin
+VRCMD = "/opt/steamvr/bin/linuxarm64/vrcmd"
+PART_NAMES = {"single": "", "left": "Left earbud", "right": "right earbud", "case": "Charging case"}
+
+
+def low_battery_message(parts):
+    """parts: list of (key, percent). Names each part, e.g.
+    'MagicPods: Left earbud 18%, right earbud 20% remaining. Charge your headphones.'"""
+    buds = [(k, p) for k, p in parts if k != "case"]
+    case = [p for k, p in parts if k == "case"]
+    if not buds:
+        return f"MagicPods: Charging case {case[0]}% remaining. Charge the case."
+    items = []
+    for k, p in buds:
+        name = PART_NAMES[k]
+        items.append(f"{name} {p}%" if name else f"{p}%")
+    if case:
+        items.append(f"charging case {case[0]}%")
+    text = ", ".join(items)
+    return f"MagicPods: {text[0].upper()}{text[1:]} remaining. Charge your headphones."
+
+
+class StandbyFix(threading.Thread):
+    """"Disable headphone standby mode": while enabled and the active headphones'
+    A2DP output exists, stream digital silence to it so the Bluetooth link never goes
+    idle (idle A2DP links make some AirPods drop and reconnect in a loop). Same idea
+    as the MagicPods Decky plugin, which loops a silent file through ffplay.
+
+    The stream is pinned to the headphones' sink (node.dont-reconnect), so
+    MagicPodsCore's "switch to speakers" cannot move it to the speakers.
+    """
+
+    def __init__(self, stopping):
+        super().__init__(name="standby-fix", daemon=True)
+        self.stopping = stopping
+        self.enabled = False
+        self.address = None
+        self.proc = None
+        self.proc_sink = None
+        self.backoff = 1.0
+        self.next_start = 0.0
+        self.started_at = 0.0
+        self.sink = None
+        self.next_sink_check = 0.0
+        self.player = shutil.which("pw-cat")
+        self.low_threshold = LOW_BATTERY_DEFAULT
+        self.last_info = {}
+        self.low_armed = {k: True for k in PART_NAMES}
+        self.last_notify = 0.0
+
+    def run(self):
+        if not self.player:
+            log("standby fix unavailable: pw-cat not found")
+        while not self.stopping["flag"]:
+            try:
+                self.session()
+            except Exception as error:  # core restarting, socket errors
+                log("standby fix: core connection:", f"{type(error).__name__}: {error}")
+            self.address = None
+            self.reconcile()
+            self.wait(5)
+        self.stop_player()
+
+    def wait(self, seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end and not self.stopping["flag"]:
+            time.sleep(0.2)
+
+    def session(self):
+        ws = CdpPage(CORE_URL)
+        try:
+            ready = False
+            while not self.stopping["flag"]:
+                try:
+                    raw = ws._read_message(time.monotonic() + 1.0)
+                except TimeoutError:
+                    self.reconcile()
+                    continue
+                try:
+                    msg = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                if "init" in msg and not ready:
+                    ready = True
+                    for request in (
+                        {"method": "GetActiveDeviceInfo"},
+                        {"method": "GetSetting", "arguments": {"container": FRAME_SETTINGS, "setting": STANDBY_KEY}},
+                        {"method": "GetSetting", "arguments": {"container": FRAME_SETTINGS, "setting": LOW_BATTERY_KEY}},
+                    ):
+                        ws._send(0x1, json.dumps(request).encode())
+                    continue
+                if not ready:
+                    continue
+                if "info" in msg:
+                    info = msg.get("info") or {}
+                    self.address = info.get("address") if isinstance(info, dict) and info.get("connected", True) else None
+                    self.last_info = info if isinstance(info, dict) else {}
+                    self.check_low_battery(self.last_info)
+                settings = msg.get("settings")
+                if isinstance(settings, dict) and isinstance(settings.get(FRAME_SETTINGS), dict):
+                    level = settings[FRAME_SETTINGS].get(LOW_BATTERY_KEY)
+                    if isinstance(level, int) and not isinstance(level, bool) and 0 <= level <= 100 and level != self.low_threshold:
+                        self.low_threshold = level
+                        self.check_low_battery(self.last_info)  # the setting can arrive after the device info
+                    value = settings[FRAME_SETTINGS].get(STANDBY_KEY)
+                    if isinstance(value, bool) and value != self.enabled:
+                        self.enabled = value
+                        log("standby fix", "enabled" if value else "disabled")
+                self.reconcile()
+        finally:
+            ws.close()
+
+    def check_low_battery(self, info):
+        """Once per connection per part, like the Decky plugin (which only says the
+        lowest percent): a part at or below the threshold, connected (status 2), not
+        charging and not reporting 0. Re-armed when the headphones disconnect."""
+        if not info:
+            self.low_armed = {k: True for k in PART_NAMES}
+            return
+        battery = (info.get("capabilities") or {}).get("battery")
+        if not isinstance(battery, dict) or self.low_threshold <= 0:
+            return
+        due = []
+        for key in ("single", "left", "right", "case"):
+            cell = battery.get(key)
+            if not isinstance(cell, dict) or cell.get("status") != 2 or cell.get("charging"):
+                continue
+            pct = cell.get("battery")
+            if not isinstance(pct, int) or pct == 0:
+                continue
+            if pct <= self.low_threshold and self.low_armed.get(key):
+                due.append((key, pct))
+        if not due:
+            return
+        for key, _ in due:
+            self.low_armed[key] = False
+        self.notify(low_battery_message(due))
+
+    def notify(self, text):
+        """Show a SteamVR notification (SteamVR's own vrcmd tool, IVRNotifications)."""
+        if not os.path.exists(VRCMD):
+            log("low battery:", text, "(vrcmd not found, not shown)")
+            return
+        if time.monotonic() - self.last_notify < 30:  # never spam
+            return
+        self.last_notify = time.monotonic()
+        log("notify:", text)
+        try:
+            subprocess.run([VRCMD, "--notify", text], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+        except (OSError, subprocess.SubprocessError) as error:
+            log("notification failed:", error)
+
+    def find_sink(self):
+        """The active headphones' A2DP output, e.g. bluez_output.AA_BB_CC_DD_EE_FF.1."""
+        if not self.address:
+            return None
+        mac = self.address.upper().replace(":", "_")
+        try:
+            out = subprocess.run(["pactl", "list", "sinks", "short"], capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        for line in out.splitlines():
+            fields = line.split("\t")
+            if len(fields) > 1 and fields[1].startswith(f"bluez_output.{mac}"):
+                return fields[1]
+        return None
+
+    def reconcile(self):
+        now = time.monotonic()
+        if self.enabled and self.address:
+            if now >= self.next_sink_check or self.sink is None:
+                self.sink = self.find_sink()
+                self.next_sink_check = now + 5
+        else:
+            self.sink = None
+        want = self.sink if (self.enabled and self.address and self.player) else None
+        if self.proc and (self.proc.poll() is not None or self.proc_sink != want):
+            exited = self.proc.poll() is not None
+            self.stop_player()
+            if exited and want:
+                self.backoff = 1.0 if now - self.started_at > 60 else min(self.backoff * 2, 30.0)
+                self.next_start = now + self.backoff
+        if want and not self.proc and now >= self.next_start:
+            self.start_player(want)
+
+    def start_player(self, sink):
+        def child_setup():  # end the player if this service dies
+            try:
+                ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
+            except Exception:
+                pass
+        zero = open("/dev/zero", "rb")
+        try:
+            self.proc = subprocess.Popen(
+                [self.player, "--playback", "--raw", "--rate", "48000", "--channels", "2", "--format", "s16",
+                 "--target", sink, "--latency", "500ms",
+                 "-P", "node.dont-reconnect=true", "-P", "node.dont-fallback=true",
+                 "-P", "media.name=MagicPods standby fix", "-P", "node.name=magicpods-standby-fix", "-"],
+                stdin=zero, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=child_setup)
+        finally:
+            zero.close()
+        self.proc_sink = sink
+        self.started_at = time.monotonic()
+        log("standby fix: keeping", sink, "awake")
+
+    def stop_player(self):
+        if not self.proc:
+            return
+        proc, self.proc, self.proc_sink = self.proc, None, None
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        log("standby fix: stopped")
+
+
 def load_menu():
     with open(MENU_FILE, "r", encoding="utf-8") as f:
         source = f.read()
@@ -170,8 +399,10 @@ def list_pages():
         targets = json.load(response)
     if not isinstance(targets, list):
         raise ValueError("unexpected DevTools target list")
+    # The VR bar and quick-access pages, plus Steam's shared context (notifications).
     return [t for t in targets if isinstance(t, dict) and isinstance(t.get("url"), str)
-            and any(m in t["url"] for m in PAGE_MARKS) and t.get("webSocketDebuggerUrl")]
+            and (any(m in t["url"] for m in PAGE_MARKS) or t.get("title") == "SharedJSContext")
+            and t.get("webSocketDebuggerUrl")]
 
 
 def main():
@@ -182,6 +413,8 @@ def main():
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    standby = StandbyFix(stopping)
+    standby.start()
     version, script = load_menu()
     log("menu version", version)
     last_status = None
@@ -214,6 +447,7 @@ def main():
                 break
             time.sleep(0.1)
     teardown_all()
+    standby.join(5)
     log("stopped")
     return 0
 
