@@ -48,9 +48,6 @@ On the Steam Frame:
 [`Uninstall-MagicPods.desktop`](https://github.com/jimas21/MagicPodsCore/releases/latest/download/Uninstall-MagicPods.desktop)
 the same way.
 
-Everything runs as your normal user; nothing needs root. Every download is checked before
-it is installed.
-
 ## Works with Laterna
 
 [Laterna](https://github.com/jimas21/laterna), the VR video player for the Steam Frame,
@@ -73,11 +70,11 @@ Technical details: [frame/README.md](frame/README.md).
 
 ## For developers
 
-- `frame/`: the Steam Frame menu (released as `magicpods-frame-menu.tar.gz`, signed).
-- `src/`: the original MagicPods desktop app (Qt), with small changes so it can work with
-  a separately running MagicPodsCore. The Frame does not use it.
-- The original project's README: [docs/UPSTREAM-README.md](docs/UPSTREAM-README.md).
-- The changes are on the `frame-arm64` branch.
+- `frame/`: the menu that shows in Steam on the Frame. Pushing a tag like `frame-menu-4`
+  makes a release. Technical details: [frame/README.md](frame/README.md).
+- `src/`: the original MagicPods desktop app, not used on the Frame.
+- Everything is on the `frame-arm64` branch. The original README is in
+  [docs/UPSTREAM-README.md](docs/UPSTREAM-README.md).
 
 ## Credits and licence
 
@@ -90,5 +87,3 @@ Technical details: [frame/README.md](frame/README.md).
 - This fork and its changes: GPL-3.0, like the original (see [LICENSE](LICENSE)).
 - If MagicPods is useful to you, consider
   [supporting the original project](https://magicpods.app/donate/).
-- AirPods is a trademark of Apple Inc.; Beats, Galaxy Buds, Pixel Buds and Steam Frame
-  belong to their owners. They are named only to say what this works with.
