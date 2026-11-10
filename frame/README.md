@@ -5,7 +5,7 @@ and how to install it, see the [project README](https://github.com/jimas21/Magic
 
 | File | What it is |
 |---|---|
-| `magicpods-menu.js` | The menu itself. Runs inside Steam's VR top bar and quick menu, and talks to MagicPodsCore on `ws://127.0.0.1:2020`. |
+| `magicpods-menu.js` | The menu itself. Runs inside Steam's VR bottom bar and quick menu, and talks to MagicPodsCore on `ws://127.0.0.1:2020`. |
 | `magicpods-steamui.py` | A small background service (Python 3, standard library only). Keeps the current menu in Steam's pages, shows low-battery notifications and runs the standby fix. |
 | `magicpods-steamui.service` | Its systemd user unit. |
 | `install.sh`, `uninstall.sh` | Set it up or remove it for the current user (no root). |
