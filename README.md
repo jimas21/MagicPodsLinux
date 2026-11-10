@@ -66,8 +66,6 @@ If a Steam update changes Steam's menus, the battery icon or the
 MagicPods tab may disappear until this project is updated. Your earbuds keep working,
 including ear detection and switching to the speakers.
 
-Technical details: [frame/README.md](frame/README.md).
-
 ## For developers
 
 - `frame/`: the menu that shows in Steam on the Frame. Pushing a tag like `frame-menu-4`
